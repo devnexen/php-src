@@ -892,10 +892,12 @@ static bool netsnmp_session_init(php_snmp_session **session_p, int version, zend
 
 	/* we have everything we need in psal, flush peername and fill it properly */
 	*(session->peername) = '\0';
+#if defined(HAVE_GETADDRINFO)
+	struct sockaddr *chosen = NULL;
+	struct sockaddr *ipv6_fallback = NULL;
+
 	res = psal;
 	while (n-- > 0) {
-		pptr = session->peername;
-#if defined(HAVE_GETADDRINFO)
 		if (force_ipv6 && (*res)->sa_family != AF_INET6) {
 			res++;
 			continue;
@@ -904,22 +906,35 @@ static bool netsnmp_session_init(php_snmp_session **session_p, int version, zend
 		   issues on systems where getaddrinfo() returns AF_INET6 mapped addresses
 		   but IPv6 networking is not actually available */
 		if (!force_ipv6 && (*res)->sa_family == AF_INET6) {
+			if (!ipv6_fallback) {
+				ipv6_fallback = *res;
+			}
 			res++;
 			continue;
 		}
-		if ((*res)->sa_family == AF_INET6) {
-			if (inet_ntop((*res)->sa_family, &(((struct sockaddr_in6*)(*res))->sin6_addr), name, sizeof(name))) {
+		if ((*res)->sa_family == AF_INET || (*res)->sa_family == AF_INET6) {
+			chosen = *res;
+			break;
+		}
+		res++;
+	}
+
+	/* On dual-stack systems, fall back to IPv6 if no IPv4 was found */
+	if (!chosen && !force_ipv6 && ipv6_fallback) {
+		chosen = ipv6_fallback;
+	}
+
+	if (chosen) {
+		pptr = session->peername;
+		if (chosen->sa_family == AF_INET6) {
+			if (inet_ntop(AF_INET6, &(((struct sockaddr_in6*)chosen)->sin6_addr), name, sizeof(name))) {
 				snprintf(pptr, MAX_NAME_LEN, "udp6:[%s]", name);
 			}
-		} else if ((*res)->sa_family == AF_INET) {
-			inet_ntop((*res)->sa_family, &(((struct sockaddr_in*)(*res))->sin_addr), pptr, INET_ADDRSTRLEN);
-		} else {
-			res++;
-			continue;
+		} else if (chosen->sa_family == AF_INET) {
+			inet_ntop(AF_INET, &(((struct sockaddr_in*)chosen)->sin_addr), pptr, INET_ADDRSTRLEN);
 		}
-#endif
-		break;
 	}
+#endif
 
 	/* If no suitable address was found, fall back to the original hostname
 	   and let Net-SNMP resolve it (matches behavior of snmprealwalk et al.) */
