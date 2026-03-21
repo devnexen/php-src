@@ -1415,7 +1415,7 @@ PHP_METHOD(SQLite3Stmt, close)
 
 	SQLITE3_CHECK_INITIALIZED(stmt_obj->db_obj, stmt_obj->initialised, SQLite3);
 
-	zend_llist_del_element(&(stmt_obj->db_obj->free_list), stmt_obj, (int (*)(void *, void *)) php_sqlite3_compare_stmt_free);
+	zend_llist_del_element(&(stmt_obj->db_obj->free_list), stmt_obj->stmt, (int (*)(void *, void *)) php_sqlite3_compare_stmt_free);
 
 	RETURN_TRUE;
 }
@@ -2145,7 +2145,7 @@ PHP_METHOD(SQLite3Result, finalize)
 
 	/* We need to finalize an internal statement */
 	if (!result_obj->is_prepared_statement) {
-		zend_llist_del_element(&(result_obj->db_obj->free_list), &result_obj->stmt_obj,
+		zend_llist_del_element(&(result_obj->db_obj->free_list), result_obj->stmt_obj->stmt,
 			(int (*)(void *, void *)) php_sqlite3_compare_stmt_free);
 	} else {
 		sqlite3_reset(result_obj->stmt_obj->stmt);
