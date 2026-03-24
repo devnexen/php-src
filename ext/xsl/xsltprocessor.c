@@ -196,7 +196,7 @@ PHP_METHOD(XSLTProcessor, importStylesheet)
 			RETURN_THROWS();
 		}
 
-		php_dom_create_object((xmlNodePtr) nodep->doc, &owner_zv, NULL);
+		php_dom_create_object((xmlNodePtr) nodep->doc, &owner_zv, php_dom_obj_from_obj(Z_OBJ_P(docp)));
 		docp = &owner_zv;
 	}
 
