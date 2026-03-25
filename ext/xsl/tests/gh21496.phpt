@@ -16,9 +16,17 @@ $doc->documentElement->appendChild($comment);
 unset($doc);
 $proc = new XSLTProcessor();
 var_dump($proc->importStylesheet($comment));
+$sxe = simplexml_load_string('<container/>');
+$proc = new XSLTProcessor();
+$proc->importStylesheet($sxe);
 ?>
 --EXPECTF--
 Warning: XSLTProcessor::importStylesheet(): compilation error: file %s line 1 element container in %s on line %d
 
 Warning: XSLTProcessor::importStylesheet(): xsltParseStylesheetProcess : document is not a stylesheet in %s on line %d
 bool(false)
+
+Warning: XSLTProcessor::importStylesheet(): compilation error: element container in %s on line %d
+
+Warning: XSLTProcessor::importStylesheet(): xsltParseStylesheetProcess : document is not a stylesheet in %s on line %d
+
