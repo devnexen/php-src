@@ -30,6 +30,8 @@ PHP                                                                        NEWS
   . Fixed bug GH-21688 (segmentation fault on empty HTMLDocument).
     (David Carlier)
   . Upgrade to lexbor v2.7.0. (ndossche, ilutov)
+  . Fixed bug GH-21544 (Dom\XMLDocument::C14N*( drops namespace declarations
+    on DOM-built documents). (David Carlier, ndossche)
 
 - Iconv:
   . Fixed bug GH-17399 (iconv memory leak on bailout). (iliaal)
