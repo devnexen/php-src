@@ -1,28 +1,33 @@
 --TEST--
-PostgreSQL prepared queries with bool constants
+PostgreSQL pg_query_params bool parameter rejection
+--EXTENSIONS--
+pgsql
 --SKIPIF--
-<?php
-include("skipif.inc");
-if (!function_exists('pg_prepare')) die('skip function pg_prepare() does not exist');
-?>
+<?php include("inc/skipif.inc"); ?>
 --FILE--
 <?php
 
-include('config.inc');
+include('inc/config.inc');
 
 $db = pg_connect($conn_str);
 
-$version = pg_version($db);
-if ($version['protocol'] >= 3) {
-    $result = pg_query_params($db, "SELECT * FROM ".$table_name." WHERE num >= $1;", array(true));
-    // bug occurs with false as it turns out as empty.
-    $result = pg_query_params($db, "SELECT * FROM ".$table_name." WHERE num <> $1;", array(false));
-    pg_free_result($result);
+try {
+    pg_query_params($db, "SELECT * FROM ".$table_name." WHERE num >= $1;", array(true));
+} catch (ValueError $e) {
+    echo $e->getMessage() . "\n";
 }
+
+try {
+    pg_query_params($db, "SELECT * FROM ".$table_name." WHERE num <> $1;", array(false));
+} catch (ValueError $e) {
+    echo $e->getMessage() . "\n";
+}
+
 pg_close($db);
 
 echo "OK";
 ?>
 --EXPECT--
+pg_query_params(): Argument #3 ($params) must not contain boolean values, use a string representation instead
+pg_query_params(): Argument #3 ($params) must not contain boolean values, use a string representation instead
 OK
-
