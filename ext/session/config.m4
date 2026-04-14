@@ -23,20 +23,15 @@ if test "$PHP_SESSION" != "no"; then
   AC_DEFINE([HAVE_PHP_SESSION], [1],
     [Define to 1 if the PHP extension 'session' is available.])
 
+  dnl GH-14019: was libmm (mm_create/mm_malloc/...), now GLib GHashTable.
   AS_VAR_IF([PHP_MM], [no],, [
-    PKG_CHECK_MODULES([LIBGLIB], [glib-2.0 >= 2.0])
+    PKG_CHECK_MODULES([LIBGLIB], [glib-2.0 >= 2.40])
 
-    PHP_EVAL_INCLINE($[LIBGLIB_CFLAGS])
-    PHP_EVAL_LIBLINE($[LIBGLIB_LIBS], [GLIB_SHARED_LIBADD])
-    PHP_CHECK_LIBRARY([glib-2.0], [g_try_malloc],
-	[AC_DEFINE([HAVE_GLIB2], [1],
-	  [Define to 1 if libglib-2.0 library has 'g_try_malloc' function.])],
-	[]
-	[$GLIB_LIBS])
+    PHP_EVAL_INCLINE($LIBGLIB_CFLAGS)
+    PHP_EVAL_LIBLINE($LIBGLIB_LIBS, [GLIB_SHARED_LIBADD])
 
     SESSION_CFLAGS="$SESSION_CFLAGS $LIBGLIB_CFLAGS"
     PHP_SUBST([GLIB_SHARED_LIBADD])
-
 
     PHP_INSTALL_HEADERS([ext/session], [mod_mm.h])
     AC_DEFINE([HAVE_LIBGLIB], [1],

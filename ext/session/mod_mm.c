@@ -12,6 +12,12 @@
    +----------------------------------------------------------------------+
  */
 
+/* GH-14019: backend switched from libmm (shared memory, prefork-only, not
+ * thread-safe, unmaintained upstream) to an in-process GLib GHashTable
+ * guarded by a TSRM mutex. Trade-off: no more cross-process sharing, but
+ * ZTS and Windows now work. Prefork users who relied on shared sessions
+ * must switch to files/memcached/redis. */
+
 #include "php.h"
 
 #ifdef HAVE_LIBGLIB
@@ -28,31 +34,31 @@
 #include "mod_mm.h"
 #include "SAPI.h"
 
-#define PS_MM_FILE "session_mm_"
-
 #ifdef ZTS
-MUTEX_T session_mm_lock;
+static MUTEX_T session_mm_lock;
+# define PS_MM_LOCK()   tsrm_mutex_lock(session_mm_lock)
+# define PS_MM_UNLOCK() tsrm_mutex_unlock(session_mm_lock)
+#else
+# define PS_MM_LOCK()   ((void) 0)
+# define PS_MM_UNLOCK() ((void) 0)
 #endif
 
-/* This list holds all data associated with one session. */
-
+/* Per-session entry stored as the GHashTable value. */
 typedef struct ps_sd {
-	time_t ctime;		/* time of last change */
+	time_t ctime;       /* time of last change */
 	void *data;
-	size_t datalen;		/* amount of valid data */
-	size_t alloclen;	/* amount of allocated memory for data */
+	size_t datalen;     /* amount of valid data */
+	size_t alloclen;    /* amount of allocated memory for data */
 } ps_sd;
 
 typedef struct {
 	GHashTable *hash;
-	pid_t owner;
 } ps_mm;
 
 typedef struct {
-	ps_mm *data;
-	zend_long maxlifetime;
-	zend_long *nrdels;
-} ps_timelimit;
+	time_t limit;
+	zend_long nrdels;
+} ps_mm_gc_ctx;
 
 static ps_mm *ps_mm_instance = NULL;
 
@@ -62,95 +68,68 @@ static ps_mm *ps_mm_instance = NULL;
 # define ps_mm_debug(a)
 #endif
 
+static guint ps_mm_hash(gconstpointer key)
+{
+	zend_ulong h = zend_string_hash_val((zend_string *) key);
+	return (guint) (h ^ (h >> 32));
+}
+
+static gboolean ps_mm_key_equals(gconstpointer a, gconstpointer b)
+{
+	return zend_string_equals((const zend_string *) a, (const zend_string *) b);
+}
+
+static void ps_mm_key_free(gpointer key)
+{
+	zend_string_release_ex((zend_string *) key, false);
+}
+
+static void ps_mm_value_free(gpointer val)
+{
+	ps_sd *sd = (ps_sd *) val;
+	if (sd->data) {
+		g_free(sd->data);
+	}
+	g_free(sd);
+}
+
 static ps_sd *ps_sd_new(ps_mm *data, zend_string *key)
 {
-	ps_sd *sd;
-
-	sd = g_try_malloc(sizeof(ps_sd) + ZSTR_LEN(key));
+	ps_sd *sd = g_try_malloc0(sizeof(ps_sd));
 	if (!sd) {
-
-		php_error_docref(NULL, E_WARNING, "g_malloc failed");
+		php_error_docref(NULL, E_WARNING, "g_try_malloc failed");
 		return NULL;
 	}
 
-	sd->ctime = 0;
-	sd->data = NULL;
-	sd->alloclen = sd->datalen = 0;
-
-	g_hash_table_insert(data->hash, key, sd);
+	g_hash_table_insert(data->hash, zend_string_copy(key), sd);
+	ps_mm_debug(("inserting %s(%p)\n", ZSTR_VAL(key), sd));
 
 	return sd;
 }
 
-static void ps_sd_destroy(ps_mm *data, zend_string *key, ps_sd *sd)
-{
-	if (sd->data) {
-		g_free(sd->data);
-	}
-
-	g_hash_table_remove(data->hash, key);
-}
-
+/* TODO: migrate to PS_MOD_UPDATE_TIMESTAMP(mm) + PS_UPDATE_TIMESTAMP_FUNC(mm)
+ * so lazy_write can skip rewriting unchanged sessions. mod_files and mod_user
+ * are already on the new API; mm is the last legacy holdout. */
 const ps_module ps_mod_mm = {
 	PS_MOD(mm)
 };
 
 #define PS_MM_DATA ps_mm *data = PS_GET_MOD_DATA()
 
-static guint ps_mm_hash(gconstpointer key) {
-        return (guint)(zend_string_hash_val((zend_string *)key)); 
-}
-
-static gboolean ps_mm_key_equals(gconstpointer a, gconstpointer b) {
-        return zend_string_equals((const zend_string *)a, (const zend_string *)b);
-}
-
 static zend_result ps_mm_initialize(ps_mm *data)
 {
-	data->owner = getpid();
-	data->hash = g_hash_table_new(ps_mm_hash, ps_mm_key_equals);
+	data->hash = g_hash_table_new_full(ps_mm_hash, ps_mm_key_equals,
+	                                   ps_mm_key_free, ps_mm_value_free);
 	if (!data->hash) {
-		php_error_docref(NULL, E_WARNING, "hash table created failed");
+		php_error_docref(NULL, E_WARNING, "hash table creation failed");
 		return FAILURE;
 	}
 
 	return SUCCESS;
 }
 
-static gboolean ps_mm_destroy_entry(gpointer key, gpointer val, gpointer _priv)
-{
-	zend_string_release_ex((zend_string *)key, false);
-	ps_sd *sd = (ps_sd *)val;
-	g_free(sd);
-	return TRUE;
-}
-
-static void ps_mm_timelimit(gpointer key, gpointer val, gpointer _priv)
-{
-	time_t limit;
-	time(&limit);
-	ps_timelimit *ps_tm = (ps_timelimit *)_priv;
-
-	limit -= ps_tm->maxlifetime;
-
-	ps_sd *sd = (ps_sd *)val;
-	if (sd->ctime < limit) {
-		ps_sd_destroy(ps_tm->data, (zend_string *)key, sd);
-		(*ps_tm->nrdels)++;
-	}
-}
-
 static void ps_mm_destroy(ps_mm *data)
 {
-	/* This function is called during each module shutdown,
-	   but we must not release the shared memory pool, when
-	   an Apache child dies! */
-	if (data->owner != getpid()) {
-		return;
-	}
-
-	g_hash_table_foreach_remove(data->hash, ps_mm_destroy_entry, NULL);
-
 	g_hash_table_destroy(data->hash);
 	pefree(data, true);
 }
@@ -179,11 +158,12 @@ PHP_MINIT_FUNCTION(ps_mm)
 PHP_MSHUTDOWN_FUNCTION(ps_mm)
 {
 	if (ps_mm_instance) {
+		ps_mm_destroy(ps_mm_instance);
+		ps_mm_instance = NULL;
 #ifdef ZTS
 		tsrm_mutex_free(session_mm_lock);
 		session_mm_lock = NULL;
 #endif
-		ps_mm_destroy(ps_mm_instance);
 		return SUCCESS;
 	}
 	return FAILURE;
@@ -214,30 +194,15 @@ PS_READ_FUNC(mm)
 	ps_sd *sd;
 	zend_result ret = FAILURE;
 
-	/* If there is an ID and strict mode, verify existence */
-	if (PS(use_strict_mode)
-		&& g_hash_table_contains(data->hash, key) == FAILURE) {
-		/* key points to PS(id), but cannot change here. */
-		if (key) {
-			efree(PS(id));
-			PS(id) = NULL;
-		}
-		PS(id) = PS(mod)->s_create_sid((void **)&data);
-		if (!PS(id)) {
-			return FAILURE;
-		}
-		if (PS(use_cookies)) {
-			PS(send_cookie) = 1;
-		}
-		php_session_reset_id();
-		PS(session_status) = php_session_active;
-	}
+	PS_MM_LOCK();
 
-	sd = g_hash_table_lookup(data->hash, PS(id));
+	sd = g_hash_table_lookup(data->hash, key);
 	if (sd) {
 		*val = zend_string_init(sd->data, sd->datalen, false);
 		ret = SUCCESS;
 	}
+
+	PS_MM_UNLOCK();
 
 	return ret;
 }
@@ -246,10 +211,9 @@ PS_WRITE_FUNC(mm)
 {
 	PS_MM_DATA;
 	ps_sd *sd;
+	zend_result ret = FAILURE;
 
-#ifdef ZTS
-	tsrm_mutex_lock(session_mm_lock);
-#endif
+	PS_MM_LOCK();
 
 	sd = g_hash_table_lookup(data->hash, key);
 	if (!sd) {
@@ -259,65 +223,72 @@ PS_WRITE_FUNC(mm)
 
 	if (sd) {
 		if (val->len >= sd->alloclen) {
-			sd->alloclen = val->len + 1;
-			sd->data = g_realloc(sd->data, sd->alloclen);
+			size_t new_alloc = val->len + 1;
+			void *new_data = g_try_realloc(sd->data, new_alloc);
 
-			if (!sd->data) {
-				ps_sd_destroy(data, key, sd);
+			if (!new_data) {
 				php_error_docref(NULL, E_WARNING, "Cannot allocate new data segment");
+				/* sd and its old data are freed by the hash table's value destroy notifier. */
+				g_hash_table_remove(data->hash, key);
 				sd = NULL;
+			} else {
+				sd->data = new_data;
+				sd->alloclen = new_alloc;
 			}
 		}
 		if (sd) {
 			sd->datalen = val->len;
 			memcpy(sd->data, val->val, val->len);
 			time(&sd->ctime);
+			ret = SUCCESS;
 		}
 	}
 
-#ifdef ZTS
-	tsrm_mutex_unlock(session_mm_lock);
-#endif
-	return sd ? SUCCESS : FAILURE;
+	PS_MM_UNLOCK();
+	return ret;
 }
 
 PS_DESTROY_FUNC(mm)
 {
 	PS_MM_DATA;
-	ps_sd *sd;
 
-#ifdef ZTS
-	tsrm_mutex_lock(session_mm_lock);
-#endif
+	PS_MM_LOCK();
+	g_hash_table_remove(data->hash, key);
+	PS_MM_UNLOCK();
 
-	sd = g_hash_table_lookup(data->hash, key);
-	if (sd) {
-		ps_sd_destroy(data, key, sd);
-	}
-
-#ifdef ZTS
-	tsrm_mutex_unlock(session_mm_lock);
-#endif
 	return SUCCESS;
+}
+
+static gboolean ps_mm_gc_check(gpointer key, gpointer val, gpointer priv)
+{
+	ps_mm_gc_ctx *ctx = (ps_mm_gc_ctx *) priv;
+	ps_sd *sd = (ps_sd *) val;
+	(void) key;
+
+	if (sd->ctime < ctx->limit) {
+		ctx->nrdels++;
+		return TRUE;
+	}
+	return FALSE;
 }
 
 PS_GC_FUNC(mm)
 {
 	PS_MM_DATA;
+	ps_mm_gc_ctx ctx;
 
-	*nrdels = 0;
 	ps_mm_debug(("gc\n"));
 
-	ps_timelimit ps_tm;
+	ctx.nrdels = 0;
+	time(&ctx.limit);
+	ctx.limit -= maxlifetime;
 
-	ps_tm.data = data;
-	ps_tm.maxlifetime = maxlifetime;
-	ps_tm.nrdels = nrdels;
+	PS_MM_LOCK();
+	g_hash_table_foreach_remove(data->hash, ps_mm_gc_check, &ctx);
+	PS_MM_UNLOCK();
 
-
-	g_hash_table_foreach(data->hash, ps_mm_timelimit, &ps_tm);
-
-	return *nrdels;
+	*nrdels = ctx.nrdels;
+	return ctx.nrdels;
 }
 
 PS_CREATE_SID_FUNC(mm)
@@ -327,21 +298,21 @@ PS_CREATE_SID_FUNC(mm)
 	PS_MM_DATA;
 
 	do {
-		sid = php_session_create_id((void **)&data);
+		sid = php_session_create_id((void **) &data);
 		if (!sid) {
-			if (--maxfail < 0) {
+			if (maxfail-- <= 0) {
 				return NULL;
-			} else {
-				continue;
 			}
+			continue;
 		}
 		/* Check collision */
-		if (g_hash_table_contains(data->hash, sid) == SUCCESS) {
-			if (sid) {
-				zend_string_release_ex(sid, false);
-				sid = NULL;
-			}
-			if (!(maxfail--)) {
+		PS_MM_LOCK();
+		gboolean exists = g_hash_table_contains(data->hash, sid);
+		PS_MM_UNLOCK();
+		if (exists) {
+			zend_string_release_ex(sid, false);
+			sid = NULL;
+			if (maxfail-- <= 0) {
 				return NULL;
 			}
 		}
@@ -355,18 +326,20 @@ PS_CREATE_SID_FUNC(mm)
  * PARAMETERS: PS_VALIDATE_SID_ARGS in php_session.h
  * RETURN VALUE: SUCCESS or FAILURE.
  *
- * Return SUCCESS for valid key(already existing session).
- * Return FAILURE for invalid key(non-existing session).
+ * Return SUCCESS for valid key (already existing session).
+ * Return FAILURE for invalid key (non-existing session).
  * *mod_data, *key are guaranteed to have non-NULL values.
  */
 PS_VALIDATE_SID_FUNC(mm)
 {
 	PS_MM_DATA;
+	gboolean found;
 
-	mm_lock(data->mm, MM_LOCK_RD);
-	zend_result ret = ps_mm_key_exists(data, key)
-	mm_unlock(data->mm);
-	return ret;
+	PS_MM_LOCK();
+	found = g_hash_table_contains(data->hash, key);
+	PS_MM_UNLOCK();
+
+	return found ? SUCCESS : FAILURE;
 }
 
 #endif
