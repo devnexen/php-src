@@ -356,10 +356,10 @@ static zend_result shift_operator_helper(gmp_binary_ui_op_t op, zval *return_val
 		shift = Z_LVAL_P(op2);
 	}
 
-	if (shift < 0) {
+	if (shift < 0 || shift > ULONG_MAX) {
 		zend_throw_error(
-			zend_ce_value_error, "%s must be greater than or equal to 0",
-			opcode == ZEND_POW ? "Exponent" : "Shift"
+			zend_ce_value_error, "%s must be between 0 and %lu",
+			opcode == ZEND_POW ? "Exponent" : "Shift", ULONG_MAX
 		);
 		ZVAL_UNDEF(return_value);
 		return FAILURE;
@@ -1087,11 +1087,6 @@ ZEND_FUNCTION(gmp_fact)
 		GMP_Z_PARAM_INTO_MPZ_PTR(gmpnum)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (mpz_sgn(gmpnum) < 0) {
-		zend_argument_value_error(1, "must be greater than or equal to 0");
-		RETURN_THROWS();
-	}
-
 	if (!mpz_fits_ulong_p(gmpnum)) {
 		zend_argument_value_error(1, "must be between 0 and %lu", ULONG_MAX);
 		RETURN_THROWS();
@@ -1114,8 +1109,8 @@ ZEND_FUNCTION(gmp_binomial)
 		Z_PARAM_LONG(k)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (k < 0) {
-		zend_argument_value_error(2, "must be greater than or equal to 0");
+	if (k < 0 || k > ULONG_MAX) {
+		zend_argument_value_error(2, "must be between 0 and %lu", ULONG_MAX);
 		RETURN_THROWS();
 	}
 
@@ -1136,8 +1131,8 @@ ZEND_FUNCTION(gmp_pow)
 		Z_PARAM_LONG(exp)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (exp < 0) {
-		zend_argument_value_error(2, "must be greater than or equal to 0");
+	if (exp < 0 || exp > ULONG_MAX) {
+		zend_argument_value_error(2, "must be between 0 and %lu", ULONG_MAX);
 		RETURN_THROWS();
 	}
 
@@ -1163,7 +1158,7 @@ ZEND_FUNCTION(gmp_powm)
 	}
 
 	if (!mpz_cmp_ui(gmpnum_mod, 0)) {
-		zend_throw_exception_ex(zend_ce_division_by_zero_error, 0, "Modulo by zero");
+		zend_argument_error(zend_ce_division_by_zero_error, 3, "Modulo by zero");
 		RETURN_THROWS();
 	}
 
@@ -1226,8 +1221,8 @@ ZEND_FUNCTION(gmp_root)
 		Z_PARAM_LONG(nth)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (nth <= 0) {
-		zend_argument_value_error(2, "must be greater than 0");
+	if (nth <= 0 || nth > ULONG_MAX) {
+		zend_argument_value_error(2, "must be between 1 and %lu", ULONG_MAX);
 		RETURN_THROWS();
 	}
 
@@ -1253,8 +1248,8 @@ ZEND_FUNCTION(gmp_rootrem)
 		Z_PARAM_LONG(nth)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (nth <= 0) {
-		zend_argument_value_error(2, "must be greater than or equal to 1");
+	if (nth <= 0 || nth > ULONG_MAX) {
+		zend_argument_value_error(2, "must be between 1 and %lu", ULONG_MAX);
 		RETURN_THROWS();
 	}
 
