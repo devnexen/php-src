@@ -2129,26 +2129,17 @@ PHP_FUNCTION(pg_fetch_object)
 		ce = zend_standard_class_def;
 	}
 
-	if (!ce->constructor && ctor_params && zend_hash_num_elements(ctor_params) > 0) {
-		zend_argument_value_error(3,
-			"must be empty when the specified class (%s) does not have a constructor",
-			ZSTR_VAL(ce->name)
-		);
+	if (UNEXPECTED(object_init_ex(return_value, ce) == FAILURE)) {
 		RETURN_THROWS();
 	}
 
 	zval dataset;
 	if (UNEXPECTED(!php_pgsql_fetch_hash(&dataset, result, row, row_is_null, PGSQL_ASSOC))) {
 		/* Either an exception is thrown, or we return false */
+		zval_ptr_dtor(return_value);
 		RETURN_FALSE;
 	}
 
-	// TODO: Check CE is an instantiable class earlier?
-	zend_result obj_initialized = object_init_ex(return_value, ce);
-	if (UNEXPECTED(obj_initialized == FAILURE)) {
-		zval_ptr_dtor(&dataset);
-		RETURN_THROWS();
-	}
 	if (!ce->default_properties_count && !ce->__set) {
 		Z_OBJ_P(return_value)->properties = Z_ARR(dataset);
 	} else {
@@ -2156,10 +2147,32 @@ PHP_FUNCTION(pg_fetch_object)
 		zval_ptr_dtor(&dataset);
 	}
 
-	// TODO: Need to grab constructor via object handler as this allows instantiating internal objects with overridden get_constructor
-	if (ce->constructor) {
-		zend_call_known_function(ce->constructor, Z_OBJ_P(return_value), Z_OBJCE_P(return_value),
+	zend_object *obj = Z_OBJ_P(return_value);
+	const zend_class_entry *old = EG(fake_scope);
+	EG(fake_scope) = ce;
+	zend_function *constructor = obj->handlers->get_constructor(obj);
+	EG(fake_scope) = old;
+
+	if (UNEXPECTED(EG(exception))) {
+		/* visibility error or override refused - VM dtors return_value */
+		return;
+	}
+
+	if (UNEXPECTED(!constructor && ctor_params && zend_hash_num_elements(ctor_params) > 0)) {
+		zend_argument_value_error(4,
+			"must be empty when the specified class (%s) does not have a constructor",
+			ZSTR_VAL(ce->name)
+		);
+		RETURN_THROWS();
+	}
+
+	if (constructor) {
+		zend_call_known_function(constructor, obj, ce,
 			/* retval */ NULL, /* argc */ 0, /* params */ NULL, ctor_params);
+		if (EG(exception)) {
+			zend_object_store_ctor_failed(obj);
+			RETURN_THROWS();
+		}
 	}
 }
 /* }}} */
