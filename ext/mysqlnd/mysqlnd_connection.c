@@ -1573,12 +1573,10 @@ MYSQLND_METHOD(mysqlnd_conn_data, set_client_option_2d)(MYSQLND_CONN_DATA * cons
 				zend_string *str;
 
 				str = zend_string_init(key, strlen(key), conn->persistent);
+				ZVAL_NEW_STR(&attrz, zend_string_init(value, strlen(value), conn->persistent));
 				if (conn->persistent) {
 					GC_MAKE_PERSISTENT_LOCAL(str);
-					ZVAL_NEW_STR(&attrz, zend_string_init(value, strlen(value), 1));
 					GC_MAKE_PERSISTENT_LOCAL(Z_COUNTED(attrz));
-				} else {
-					ZVAL_NEW_STR(&attrz, zend_string_init(value, strlen(value), 0));
 				}
 				zend_hash_update(conn->options->connect_attr, str, &attrz);
 				zend_string_release_ex(str, conn->persistent);
