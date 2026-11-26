@@ -186,6 +186,8 @@ PHP                                                                        NEWS
   . Fix JIT register allocation for ASSIGN to traced reference. (ndossche)
   . Fixed a double free when a destructor throws while freeing a temporary
     whose result the optimizer discarded. (Ilia Alshanetsky)
+  . Fixed bug GH-25756 (OPcache: "Invalid opcode 62/4/0" when assigning a
+    reference in a return). (Ilia Alshanetsky, Pratik Bhujel)
 
 - OpenSSL:
   . Fixed bug GH-25172 (TLS session reuse shares request-lifetime callback
