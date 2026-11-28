@@ -54,8 +54,12 @@
 #endif
 
 #ifdef HAVE_COMMONCRYPTO_COMMONRANDOM_H
-# include <CommonCrypto/CommonCryptoError.h>
-# include <CommonCrypto/CommonRandom.h>
+# include <AvailabilityMacros.h>
+# if MAC_OS_X_VERSION_MIN_REQUIRED >= 101200
+#  define PHP_USE_CCRANDOMGENERATEBYTES 1
+#  include <CommonCrypto/CommonCryptoError.h>
+#  include <CommonCrypto/CommonRandom.h>
+# endif
 #endif
 
 #if __has_feature(memory_sanitizer)
@@ -74,7 +78,7 @@ ZEND_ATTRIBUTE_NONNULL PHPAPI zend_result php_random_bytes_ex(void *bytes, size_
 		snprintf(errstr, errstr_size, "Failed to retrieve randomness from the operating system (BCryptGenRandom)");
 		return FAILURE;
 	}
-#elif defined(HAVE_COMMONCRYPTO_COMMONRANDOM_H)
+#elif defined(PHP_USE_CCRANDOMGENERATEBYTES)
 	/*
 	 * Purposely prioritized upon arc4random_buf for modern macOs releases
 	 * arc4random api on this platform uses `ccrng_generate` which returns
